@@ -7,7 +7,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from app.config import settings
 from app.models.base import ModelArtifactNotFoundError, ModelInferenceError
 from app.models.voice_classifier import VoiceClassifierWrapper
-from app.preprocessing.audio_converter import AudioConversionError
+from app.preprocessing.audio_converter import AudioConversionError, detect_audio_format
 from app.preprocessing.pipeline import run_voice_feature_pipeline
 from app.schemas.prediction import PredictionResponse
 
@@ -25,29 +25,19 @@ voice_classifier = VoiceClassifierWrapper()
     status_code=status.HTTP_200_OK,
     summary="Predict stress/trauma from voice audio",
     description=(
-        "Upload raw audio (wav, mp3, m4a, ogg, flac, etc.). Runs the full 3-stream extraction chain "
-        "(openSMILE acoustic + Wav2Vec2-XLS-R SER + IndicConformer/MuRIL NLP), concatenates into fused "
-        "vector, applies saved preprocessing (scaler + PCA), and predicts stress/trauma class."
+        "Upload raw audio in any format (webm, ogg, mp3, wav, m4a, flac, etc.). Runs the full "
+        "3-stream extraction chain (openSMILE acoustic + Wav2Vec2-XLS-R SER + IndicConformer/MuRIL NLP), "
+        "concatenates into fused vector, applies preprocessing (imputer + scaler + PCA), and predicts stress/trauma."
     ),
 )
 async def predict_voice(
-    audio: UploadFile = File(..., description="Audio recording file to analyze"),
+    audio: UploadFile = File(..., description="Audio recording file or browser blob to analyze"),
 ):
     """Voice pipeline prediction handler."""
-    # 1. Validate file extension
+    # 1. Read bytes & check size limit
     filename = audio.filename or "audio.wav"
     suffix = Path(filename).suffix.lower()
 
-    if suffix not in settings.ALLOWED_AUDIO_EXTENSIONS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Unsupported audio format '{suffix}'. Allowed formats: "
-                f"{', '.join(settings.ALLOWED_AUDIO_EXTENSIONS)}"
-            ),
-        )
-
-    # 2. Read bytes & check size limit
     raw_audio_bytes = await audio.read()
     if not raw_audio_bytes:
         raise HTTPException(
@@ -62,9 +52,32 @@ async def predict_voice(
             detail=f"Audio file exceeds the maximum limit of {max_mb:.1f} MB.",
         )
 
+    # 2. Format validation (supports extension, browser MIME types, and magic bytes)
+    detected_format = detect_audio_format(
+        raw_audio_bytes,
+        filename_or_mime=audio.content_type or filename,
+    )
+    allowed_exts_clean = {ext.lstrip(".").lower() for ext in settings.ALLOWED_AUDIO_EXTENSIONS}
+    is_valid_format = (
+        (suffix in settings.ALLOWED_AUDIO_EXTENSIONS)
+        or (detected_format and detected_format.lower() in allowed_exts_clean)
+    )
+
+    if not is_valid_format:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported audio format '{suffix or detected_format or 'unknown'}'. Allowed formats: "
+                f"{', '.join(settings.ALLOWED_AUDIO_EXTENSIONS)}"
+            ),
+        )
+
     # 3. Execute 3-stream feature extraction & fusion pipeline
     try:
-        pipeline_features = run_voice_feature_pipeline(raw_audio_bytes)
+        pipeline_features = run_voice_feature_pipeline(
+            raw_audio_bytes,
+            format_hint=detected_format or suffix,
+        )
     except AudioConversionError as conv_err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

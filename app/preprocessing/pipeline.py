@@ -13,7 +13,7 @@ Each stage is exposed as an independent callable function for isolated unit test
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-from typing import BinaryIO, Dict, Tuple, Union
+from typing import BinaryIO, Dict, Optional, Tuple, Union
 import numpy as np
 
 from app.preprocessing.audio_converter import convert_audio_to_wav_pcm16
@@ -56,18 +56,30 @@ def stage_convert_audio(
     audio_input: Union[bytes, BinaryIO, str, Path],
     target_sr: int = 16000,
     target_channels: int = 1,
+    format_hint: Optional[str] = None,
 ) -> Tuple[np.ndarray, int, bytes]:
     """Stage 1: Convert raw audio into 16kHz mono 16-bit PCM WAV.
 
+    Format-agnostic audio standardization stage. Accepts browser recording
+    formats (.webm, .ogg) as well as standard audio files (.mp3, .wav, .m4a, .flac).
+
+    Args:
+        audio_input: Raw audio bytes, file-like buffer, or filesystem path.
+        target_sr: Target sample rate in Hz (default: 16000).
+        target_channels: Number of target channels (default: 1 for mono).
+        format_hint: Optional container or extension hint (e.g. 'webm', 'ogg', 'mp3').
+
     Returns:
-        (waveform, sample_rate, wav_bytes)
+        Tuple of (waveform: np.ndarray, sample_rate: int, wav_bytes: bytes)
     """
     logger.info("Running Pipeline Stage 1: Audio Standardization to 16kHz mono PCM16...")
     return convert_audio_to_wav_pcm16(
         audio_input=audio_input,
         target_sr=target_sr,
         target_channels=target_channels,
+        format_hint=format_hint,
     )
+
 
 
 # ============================================================================
@@ -160,14 +172,19 @@ def stage_concatenate_features(
 # ============================================================================
 def run_voice_feature_pipeline(
     audio_input: Union[bytes, BinaryIO, str, Path],
+    format_hint: Optional[str] = None,
 ) -> VoicePipelineFeatures:
     """Execute all voice feature extraction stages in sequence.
+
+    Args:
+        audio_input: Audio bytes, buffer, or filepath in any common format (webm, ogg, mp3, etc.).
+        format_hint: Optional format or extension hint (e.g. 'webm', 'ogg', 'mp3').
 
     Returns:
         VoicePipelineFeatures containing all intermediate and fused representations.
     """
     # 1. Convert to standardized 16kHz mono PCM16 WAV
-    waveform, sr, wav_bytes = stage_convert_audio(audio_input)
+    waveform, sr, wav_bytes = stage_convert_audio(audio_input, format_hint=format_hint)
 
     # 2a. Acoustic features (openSMILE)
     acoustic_feats = stage_extract_acoustic(wav_bytes, sample_rate=sr)

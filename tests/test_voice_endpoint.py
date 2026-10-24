@@ -132,3 +132,44 @@ def test_predict_voice_endpoint_503_loud_failure_when_artifact_missing(tmp_path:
         voice_classifier.model_dir = original_dir
         if original_path.is_file():
             voice_classifier.load_artifacts()
+
+
+def test_predict_voice_endpoint_accepts_browser_webm_and_ogg(dummy_production_model_path: Path):
+    """Verify /predict/voice accepts browser MediaRecorder webm and ogg uploads."""
+    original_path = voice_classifier.model_path
+    original_dir = voice_classifier.model_dir
+    try:
+        voice_classifier.model_path = dummy_production_model_path
+        voice_classifier.model_dir = dummy_production_model_path.parent
+        voice_classifier.load_artifacts()
+
+        dummy_features = _make_dummy_pipeline_features()
+
+        # 1. Test WebM upload
+        webm_bytes = b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01" + b"\x00" * 30
+        with patch("app.routers.voice.run_voice_feature_pipeline", return_value=dummy_features) as mock_pipe:
+            response = client.post(
+                "/predict/voice",
+                files={"audio": ("recording.webm", webm_bytes, "audio/webm;codecs=opus")},
+            )
+            assert response.status_code == 200
+            assert response.json()["predicted_label"] in ("low risk", "elevated risk")
+            assert mock_pipe.call_args[1]["format_hint"] == "webm"
+
+        # 2. Test Ogg upload with browser 'blob' filename without extension
+        ogg_bytes = b"OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00" + b"\x00" * 30
+        with patch("app.routers.voice.run_voice_feature_pipeline", return_value=dummy_features) as mock_pipe:
+            response = client.post(
+                "/predict/voice",
+                files={"audio": ("blob", ogg_bytes, "audio/ogg;codecs=opus")},
+            )
+            assert response.status_code == 200
+            assert response.json()["predicted_label"] in ("low risk", "elevated risk")
+            assert mock_pipe.call_args[1]["format_hint"] == "ogg"
+
+    finally:
+        voice_classifier.model_path = original_path
+        voice_classifier.model_dir = original_dir
+        if original_path.is_file():
+            voice_classifier.load_artifacts()
+
