@@ -231,8 +231,9 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
         """
         if not self.model_path.is_file():
             logger.error("Production model artifact file missing at: %s", self.model_path)
+            pipeline_name = getattr(self, "pipeline_name", "voice")
             raise ModelArtifactNotFoundError(
-                pipeline_name="voice",
+                pipeline_name=pipeline_name,
                 missing_files=[self.model_path],
                 target_dir=self.model_dir,
             )

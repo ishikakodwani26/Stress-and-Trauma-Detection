@@ -60,8 +60,10 @@ def test_predict_voice_endpoint_success(dummy_production_model_path: Path):
         assert "probabilities" in data
         assert "elevated_risk" in data["probabilities"]
         assert "low_risk" in data["probabilities"]
+        assert data.get("modality") == "voice"
 
         meta = data.get("metadata", {})
+        assert meta.get("modality") == "voice"
         assert "svi_score" in meta
         assert "threshold" in meta
         assert "branch_scores" in meta

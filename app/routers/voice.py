@@ -97,6 +97,7 @@ async def predict_voice(
     combined_metadata = {
         "filename": filename,
         "audio_bytes": len(raw_audio_bytes),
+        "modality": "voice",
         "transcript": pipeline_features.transcript,
         "feature_dimensions": pipeline_features.feature_summary,
         **(result.metadata or {}),
@@ -106,5 +107,6 @@ async def predict_voice(
         predicted_label=result.predicted_label,
         probabilities=result.probabilities,
         shap_values=result.shap_values,
+        modality="voice",
         metadata=combined_metadata,
     )

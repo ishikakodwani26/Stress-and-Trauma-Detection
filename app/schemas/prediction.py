@@ -31,6 +31,10 @@ class PredictionResponse(BaseModel):
         default=None,
         description="Placeholder for future SHAP / feature explainability values.",
     )
+    modality: Optional[str] = Field(
+        default=None,
+        description="Input modality indicating pipeline origin ('voice' or 'chat').",
+    )
     metadata: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Diagnostic metadata (e.g., feature dimensions, processing duration, audio transcript).",

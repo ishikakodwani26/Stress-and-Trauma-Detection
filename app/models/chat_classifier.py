@@ -1,10 +1,23 @@
-"""Inference wrapper for the Chat-based Stress and Trauma classifier.
+"""Unified Chat Classifier Wrapper for Stress and Trauma Detection.
 
-Reuses the production NLP branch (model_nlp, pca_nlp, scaler, imputer) from
-three_pipeline_stress_model.pkl. Operates strictly on 768-dimensional MuRIL
-NLP embeddings extracted from chat/text input.
+Implements the unified 1880-dim late-fusion pipeline for text-based chat:
+1. Receives 768-dim MuRIL NLP embeddings from the text transcript.
+2. Assembles the full 1880-dimensional multimodal vector:
+   - Acoustic slice (indices 0:88): np.nan (88 features)
+   - Emotion slice (indices 88:1112): np.nan (1024 features)
+   - NLP slice (indices 1112:1880): real MuRIL text embeddings (768 features)
+3. Executes the EXACT same inference pipeline as /predict/voice:
+   imputer (SimpleImputer mean fills acoustic and emotion slices with training means)
+   -> scaler (StandardScaler normalizes all dimensions, mapping mean-imputed slices to 0.0)
+   -> slice into 3 branches (ac_idx, em_idx, nlp_idx)
+   -> PCA per branch (10, 15, 15 components)
+   -> LogisticRegression per branch (model_ac, model_em, model_nlp)
+   -> late-fusion probability blending using fusion_weights
+   -> SVI (Stress & Trauma Vulnerability Index) score = final_prob * 100.0
+   -> risk_label: 'elevated risk' (if SVI >= threshold) vs 'low risk'.
 
-Raises ModelArtifactNotFoundError loudly (HTTP 503) if the production artifact is missing.
+Operates strictly on text embeddings. Never imports audio, acoustic, or emotion
+extraction libraries (openSMILE, soundfile, pydub, XLS-R).
 """
 
 import logging
@@ -14,17 +27,42 @@ import numpy as np
 
 from app.config import settings, BASE_DIR
 from app.models.base import (
-    BaseClassifierWrapper,
     ModelArtifactNotFoundError,
     ModelInferenceError,
     PredictionResult,
 )
+from app.models.voice_classifier import VoiceClassifierWrapper
 
 logger = logging.getLogger(__name__)
 
 
-class ChatClassifierWrapper(BaseClassifierWrapper):
-    """Chat text pipeline classifier wrapper reusing the production NLP branch."""
+def assemble_chat_1880_vector(nlp_features: np.ndarray) -> np.ndarray:
+    """Construct an 1880-dim feature vector for chat inference.
+
+    Acoustic (0:88) and emotion (88:1112) slices are set specifically to NaN
+    so the production SimpleImputer(strategy='mean') fills them with their
+    training-set means. The NLP slice (1112:1880) contains real MuRIL embeddings.
+
+    Args:
+        nlp_features: 1D or 2D array of 768-dimensional MuRIL embeddings.
+
+    Returns:
+        np.ndarray: 1D float64 array of shape (1880,) containing [NaNs, NaNs, NLP].
+    """
+    nlp_flat = np.asarray(nlp_features, dtype=np.float64).flatten()
+    if nlp_flat.size != 768:
+        raise ValueError(
+            f"Expected 768 NLP embedding dimensions, got {nlp_flat.size}."
+        )
+
+    acoustic_slice = np.full(88, np.nan, dtype=np.float64)
+    emotion_slice = np.full(1024, np.nan, dtype=np.float64)
+
+    return np.concatenate([acoustic_slice, emotion_slice, nlp_flat])
+
+
+class ChatClassifierWrapper(VoiceClassifierWrapper):
+    """Unified chat inference wrapper sharing the exact production 1880-dim pipeline."""
 
     def __init__(
         self,
@@ -33,220 +71,63 @@ class ChatClassifierWrapper(BaseClassifierWrapper):
         threshold: Optional[float] = None,
         **kwargs: Any,
     ):
-        """Initialize the chat classifier wrapper.
+        """Initialize the unified chat classifier wrapper.
 
-        Args:
-            model_dir: Optional directory containing production model artifacts.
-            model_path: Optional exact path to three_pipeline_stress_model.pkl.
-            threshold: SVI threshold for 'elevated risk' classification (defaults to 50.0).
-            **kwargs: Backward compatibility for legacy arguments.
+        Points to the single production artifact (three_pipeline_stress_model.pkl).
         """
-        self.model_dir = (
-            Path(model_dir)
-            if model_dir is not None
-            else getattr(settings, "PRODUCTION_MODEL_DIR", BASE_DIR / "models" / "production")
+        super().__init__(
+            model_dir=model_dir,
+            model_path=model_path,
+            threshold=threshold,
+            **kwargs,
         )
+        self.pipeline_name = "chat"
 
-        if model_path is not None:
-            self.model_path = Path(model_path)
-        elif model_dir is not None:
-            self.model_path = self.model_dir / "three_pipeline_stress_model.pkl"
-        else:
-            configured_path = getattr(
-                settings,
-                "PRODUCTION_MODEL_PATH",
-                self.model_dir / "three_pipeline_stress_model.pkl",
-            )
-            self.model_path = Path(configured_path)
+    def assemble_vector(self, nlp_features: np.ndarray) -> np.ndarray:
+        """Helper method to assemble 1880-dim vector from 768-dim NLP embeddings."""
+        return assemble_chat_1880_vector(nlp_features)
 
-        # Fallback check for app/models/production only if neither model_dir nor model_path was explicitly given
-        explicit_config = (model_dir is not None) or (model_path is not None)
-        if not explicit_config and not self.model_path.is_file():
-            app_production_candidate = (
-                BASE_DIR / "app" / "models" / "production" / "three_pipeline_stress_model.pkl"
-            )
-            if app_production_candidate.is_file():
-                self.model_path = app_production_candidate
+    def predict(
+        self,
+        feature_vector: np.ndarray,
+        threshold: Optional[float] = None,
+    ) -> PredictionResult:
+        """Run unified 1880-dim inference for chat.
 
-        # SVI threshold for elevated risk (default 50.0)
-        if threshold is not None:
-            self.threshold = float(threshold)
-        else:
-            self.threshold = float(getattr(settings, "SVI_THRESHOLD", 50.0))
+        Accepts either:
+        - 768-dim raw MuRIL NLP embedding: automatically assembled into 1880-dim vector
+          with acoustic and emotion slices set to np.nan.
+        - 1880-dim already-assembled feature vector.
 
-        # Core components extracted from production artifact
-        self.imputer: Optional[Any] = None
-        self.scaler: Optional[Any] = None
-        self.pca_nlp: Optional[Any] = None
-        self.model_nlp: Optional[Any] = None
-        self.nlp_idx: Optional[List[int]] = None
-        self.nlp_cols: List[str] = []
-        self._raw_artifact: Optional[Dict[str, Any]] = None
-
-    @property
-    def is_loaded(self) -> bool:
-        """Check whether the NLP branch artifacts are loaded in memory."""
-        return self.model_nlp is not None and self.pca_nlp is not None
-
-    def check_artifacts_on_disk(self) -> Dict[str, bool]:
-        """Check whether the required model artifact exists on disk."""
-        return {
-            "three_pipeline_stress_model.pkl": self.model_path.is_file(),
-        }
-
-    def load_artifacts(self) -> None:
-        """Load NLP branch artifacts from the single production .pkl file.
-
-        Fails loudly and explicitly (HTTP 503) if the artifact is missing on disk.
+        Returns:
+            PredictionResult matching the voice prediction output.
         """
-        if not self.model_path.is_file():
-            logger.error("Chat production model artifact missing at: %s", self.model_path)
-            raise ModelArtifactNotFoundError(
-                pipeline_name="chat",
-                missing_files=[self.model_path],
-                target_dir=self.model_dir,
-            )
-
-        import joblib
-
         try:
-            logger.info("Loading chat NLP branch from: %s", self.model_path.resolve())
-            artifact = joblib.load(self.model_path)
+            X = np.asarray(feature_vector, dtype=np.float64)
 
-            if not isinstance(artifact, dict):
+            # If 768-dim NLP vector provided, assemble 1880 vector with NaNs for acoustic and emotion
+            if X.size == 768:
+                X_1880 = self.assemble_vector(X)
+            elif X.size == 1880:
+                X_1880 = X.flatten()
+            else:
                 raise ValueError(
-                    f"Expected production model artifact to be a dict, got {type(artifact).__name__}"
+                    f"Expected 768 NLP embedding dims or 1880 fused dims, got {X.size}."
                 )
 
-            self._raw_artifact = artifact
+            # Execute the exact same inference path as voice
+            result = super().predict(X_1880, threshold=threshold)
 
-            # 1. Preprocessing components
-            self.imputer = artifact.get("imputer")
-            self.scaler = artifact.get("scaler")
+            # Enrich metadata to indicate chat modality and imputed branches
+            if result.metadata is not None:
+                result.metadata["modality"] = "chat"
+                result.metadata["imputed_branches"] = ["acoustic", "emotion"]
+                result.metadata["active_branches"] = ["nlp"]
 
-            # 2. NLP branch components
-            self.pca_nlp = artifact.get("pca_nlp")
-            if self.pca_nlp is None:
-                raise ValueError("Artifact dictionary is missing required 'pca_nlp' component.")
+            return result
 
-            self.model_nlp = artifact.get("model_nlp")
-            if self.model_nlp is None:
-                raise ValueError("Artifact dictionary is missing required 'model_nlp' component.")
-
-            # Validate expected class ordering [0, 1] to avoid silent prediction inversion
-            if hasattr(self.model_nlp, "classes_"):
-                classes_arr = np.asarray(self.model_nlp.classes_)
-                if not np.array_equal(classes_arr, np.array([0, 1])):
-                    raise ValueError(
-                        f"Chat model_nlp has unexpected class ordering {classes_arr.tolist()}. "
-                        f"Expected [0, 1] where 0='low risk' and 1='elevated risk'."
-                    )
-
-            # Slicing indices for NLP stream (768 features)
-            self.nlp_idx = artifact.get("nlp_idx")
-            if self.nlp_idx is None:
-                # Default to slice of last 768 features if index map is omitted
-                total_features = len(artifact.get("feature_columns", [])) or 1880
-                self.nlp_idx = list(range(total_features - 768, total_features))
-
-            self.nlp_cols = list(artifact.get("nlp_cols", []))
-
-            logger.info(
-                "ChatClassifierWrapper successfully loaded NLP branch (PCA components=%d, LR classes=%s)",
-                getattr(self.pca_nlp, "n_components_", 15),
-                getattr(self.model_nlp, "classes_", [0, 1]),
-            )
         except ModelArtifactNotFoundError:
             raise
         except Exception as err:
-            logger.error("Failed to load chat model artifacts: %s", err, exc_info=True)
-            raise ModelInferenceError(f"Error loading chat model artifacts: {err}") from err
-
-    def predict(self, feature_vector: np.ndarray) -> PredictionResult:
-        """Run inference on 768-dim MuRIL NLP embeddings using the production NLP branch.
-
-        Args:
-            feature_vector: 1D or 2D array of MuRIL embeddings (768 dims).
-
-        Returns:
-            PredictionResult with predicted_label ('elevated risk' vs 'low risk'),
-            probabilities, and diagnostic metadata (SVI score, NLP probability).
-        """
-        if not self.is_loaded:
-            self.load_artifacts()
-
-        try:
-            X = np.asarray(feature_vector, dtype=np.float64)
-            if X.ndim == 1:
-                X = X.reshape(1, -1)
-            elif X.ndim != 2:
-                raise ValueError(f"Feature vector must be 1D or 2D array, got {X.ndim}D shape {X.shape}")
-
-            expected_dims = len(self.nlp_cols) if self.nlp_cols else 768
-            if X.shape[1] != expected_dims:
-                raise ValueError(
-                    f"Expected {expected_dims} NLP embedding dimensions, got {X.shape[1]}."
-                )
-
-            # 1. Imputation: apply mean imputation if NaNs are present
-            if self.imputer is not None and hasattr(self.imputer, "statistics_") and self.nlp_idx is not None:
-                nlp_imputer_stats = np.asarray(self.imputer.statistics_)[self.nlp_idx]
-                nan_mask = np.isnan(X)
-                if np.any(nan_mask):
-                    X = np.where(nan_mask, nlp_imputer_stats, X)
-
-            # 2. Scaling: apply standard scaler parameters for the NLP slice
-            if self.scaler is not None and hasattr(self.scaler, "mean_") and hasattr(self.scaler, "scale_") and self.nlp_idx is not None:
-                nlp_mean = np.asarray(self.scaler.mean_)[self.nlp_idx]
-                nlp_scale = np.asarray(self.scaler.scale_)[self.nlp_idx]
-                # Avoid division by zero
-                nlp_scale = np.where(nlp_scale == 0.0, 1.0, nlp_scale)
-                X_scaled = (X - nlp_mean) / nlp_scale
-            else:
-                X_scaled = X
-
-            # 3. PCA Transformation (768 -> 15 dimensions)
-            X_pca = self.pca_nlp.transform(X_scaled)
-
-            # 4. LogisticRegression branch inference
-            if hasattr(self.model_nlp, "predict_proba"):
-                probas = self.model_nlp.predict_proba(X_pca)[0]
-                if len(probas) > 1:
-                    prob_elevated = float(probas[1])
-                    prob_low = float(probas[0])
-                else:
-                    prob_elevated = float(probas[0])
-                    prob_low = float(1.0 - prob_elevated)
-            else:
-                raw_pred = self.model_nlp.predict(X_pca)[0]
-                prob_elevated = 1.0 if raw_pred == 1 else 0.0
-                prob_low = 1.0 - prob_elevated
-
-            # 5. SVI Score calculation and thresholding
-            svi_score = prob_elevated * 100.0
-            predicted_label = "elevated risk" if svi_score >= self.threshold else "low risk"
-
-            probabilities = {
-                "elevated_risk": round(prob_elevated, 4),
-                "low_risk": round(prob_low, 4),
-            }
-
-            metadata: Dict[str, Any] = {
-                "svi_score": round(svi_score, 2),
-                "threshold": self.threshold,
-                "nlp_probability": round(prob_elevated, 4),
-                "pca_components": int(getattr(self.pca_nlp, "n_components_", 15)),
-                "nlp_pca_components": int(getattr(self.pca_nlp, "n_components_", 15)),
-                "model_artifact": str(self.model_path),
-            }
-
-            return PredictionResult(
-                predicted_label=predicted_label,
-                probabilities=probabilities,
-                shap_values=None,
-                metadata=metadata,
-            )
-
-        except Exception as err:
-            logger.error("Chat NLP inference error: %s", err, exc_info=True)
+            logger.error("Unified chat prediction error: %s", err, exc_info=True)
             raise ModelInferenceError(f"Chat prediction failed: {err}") from err

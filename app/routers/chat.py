@@ -71,5 +71,6 @@ async def predict_chat(request: ChatPredictionRequest):
         predicted_label=result.predicted_label,
         probabilities=result.probabilities,
         shap_values=result.shap_values,
+        modality="chat",
         metadata=combined_metadata,
     )
