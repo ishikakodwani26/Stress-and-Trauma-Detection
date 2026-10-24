@@ -1,0 +1,37 @@
+# Web Framework and Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-multipart>=0.0.9
+
+# Scientific & ML Foundations
+numpy>=1.23.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Audio Processing & Conversion
+soundfile>=0.12.1
+librosa>=0.10.1
+pydub>=0.25.1
+
+# Feature Stream 1: Acoustic Features
+opensmile>=2.4.0
+
+# Deep Learning (Feature Streams 2 & 3)
+torch>=2.0.0
+torchaudio>=2.0.0
+transformers>=4.36.0
+
+# Feature Stream 3 (ASR): IndicConformer
+# Note: For IndicConformer (AI4Bharat), install either via NeMo or HuggingFace:
+# pip install nemo_toolkit['asr']
+# Or use the HuggingFace checkpoint / model repository as configured in config.py
+
+# Explainability (Placeholder for future integration)
+# shap>=0.44.0
+
+# Testing & Development
+pytest>=8.0.0
+httpx>=0.27.0

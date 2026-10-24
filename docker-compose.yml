@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stress-trauma-backend:latest
+    container_name: stress_trauma_api
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=Stress and Trauma Detection Backend
+      - DEBUG=true
+      - STRICT_MODEL_LOADING=false
+    volumes:
+      - ./models:/app/models
+      - ./app:/app/app
+    # Uncomment to enable NVIDIA GPU support locally
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
