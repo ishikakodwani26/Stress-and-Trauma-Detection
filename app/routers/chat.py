@@ -61,6 +61,7 @@ async def predict_chat(request: ChatPredictionRequest):
 
     # 3. Enrich metadata
     combined_metadata = {
+        "text": request.text,
         "text_length": len(request.text),
         "nlp_embedding_dims": int(nlp_embeddings.size),
         **(result.metadata or {}),

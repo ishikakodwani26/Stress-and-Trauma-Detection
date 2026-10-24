@@ -96,3 +96,112 @@ def test_production_model_loud_failure_missing_path(tmp_path):
     assert err.pipeline_name == "voice"
     assert "three_pipeline_stress_model.pkl" in [f.name for f in err.missing_files]
     assert str(missing_dir) in str(err)
+
+
+def test_production_model_classes_direction():
+    """Verify that model_ac, model_em, model_nlp all have .classes_ == [0, 1].
+
+    Sourced from BTP Technical Report Phase 2 binary mapping:
+      Class 0 = "low risk" (Low Stress / baseline)
+      Class 1 = "elevated risk" (Elevated Risk / High Stress)
+    predict_proba index 1 MUST correspond to elevated risk, driving SVI = prob * 100.
+    """
+    import joblib
+    from app.config import settings
+    from app.models.voice_classifier import (
+        EXPECTED_CLASS_ORDER,
+        CLASS_INDEX_LOW_RISK,
+        CLASS_INDEX_ELEVATED_RISK,
+        LABEL_LOW_RISK,
+        LABEL_ELEVATED_RISK,
+    )
+
+    artifact = joblib.load(settings.PRODUCTION_MODEL_PATH)
+    assert isinstance(artifact, dict)
+
+    for branch in ["ac", "em", "nlp"]:
+        model = artifact[f"model_{branch}"]
+        assert hasattr(model, "classes_"), f"model_{branch} missing classes_ attribute"
+        classes = np.asarray(model.classes_)
+        assert np.array_equal(classes, EXPECTED_CLASS_ORDER), (
+            f"model_{branch}.classes_ is {classes.tolist()}, expected {EXPECTED_CLASS_ORDER.tolist()}!"
+        )
+        # Explicit index mapping check
+        assert classes[CLASS_INDEX_LOW_RISK] == 0, f"Index 0 must map to class 0 ({LABEL_LOW_RISK})"
+        assert classes[CLASS_INDEX_ELEVATED_RISK] == 1, f"Index 1 must map to class 1 ({LABEL_ELEVATED_RISK})"
+
+
+def test_production_model_feature_column_and_index_order():
+    """Verify feature_columns assembly order and index slicing in the production artifact.
+
+    Must strictly follow:
+      - 0:88      -> Acoustic (88 openSMILE eGeMAPSv02 functionals)
+      - 88:1112   -> Emotion (1024 Wav2Vec2-XLS-R embeddings)
+      - 1112:1880 -> NLP (768 MuRIL embeddings)
+    """
+    import joblib
+    from app.config import settings
+
+    artifact = joblib.load(settings.PRODUCTION_MODEL_PATH)
+
+    feat_cols = artifact["feature_columns"]
+    ac_cols = artifact["ac_cols"]
+    em_cols = artifact["em_cols"]
+    nlp_cols = artifact["nlp_cols"]
+
+    ac_idx = artifact["ac_idx"]
+    em_idx = artifact["em_idx"]
+    nlp_idx = artifact["nlp_idx"]
+
+    # Dimension counts
+    assert len(feat_cols) == 1880
+    assert len(ac_cols) == 88
+    assert len(em_cols) == 1024
+    assert len(nlp_cols) == 768
+
+    # Index slices
+    assert ac_idx == list(range(0, 88))
+    assert em_idx == list(range(88, 1112))
+    assert nlp_idx == list(range(1112, 1880))
+
+    # Sequential alignment
+    assert feat_cols[:88] == ac_cols
+    assert feat_cols[88:1112] == em_cols
+    assert feat_cols[1112:1880] == nlp_cols
+
+
+def test_stage_concatenate_features_order_matches_artifact():
+    """Verify that stage_concatenate_features() strictly places acoustic -> emotion -> nlp in exact order."""
+    from app.preprocessing.pipeline import stage_concatenate_features
+
+    ac = np.full(88, 1.0, dtype=np.float32)
+    em = np.full(1024, 2.0, dtype=np.float32)
+    nlp = np.full(768, 3.0, dtype=np.float32)
+
+    fused = stage_concatenate_features(acoustic_features=ac, emotion_features=em, nlp_features=nlp)
+
+    assert fused.shape == (1880,)
+    assert np.all(fused[:88] == 1.0), "Acoustic slice not at [0:88]"
+    assert np.all(fused[88:1112] == 2.0), "Emotion slice not at [88:1112]"
+    assert np.all(fused[1112:1880] == 3.0), "NLP slice not at [1112:1880]"
+
+
+def test_classifier_fails_loudly_on_inverted_classes(tmp_path):
+    """Verify that if an artifact has inverted class ordering [1, 0], loading fails loudly."""
+    import joblib
+    from app.config import settings
+
+    import copy
+    artifact = copy.deepcopy(joblib.load(settings.PRODUCTION_MODEL_PATH))
+    # Invert class ordering on model_ac
+    artifact["model_ac"].classes_ = np.array([1, 0])
+
+    bad_model_path = tmp_path / "inverted_model.pkl"
+    joblib.dump(artifact, bad_model_path)
+
+    wrapper = VoiceClassifierWrapper(model_path=bad_model_path)
+    with pytest.raises(ModelInferenceError) as exc_info:
+        wrapper.load_artifacts()
+
+    assert "unexpected class ordering" in str(exc_info.value)
+

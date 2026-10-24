@@ -37,5 +37,5 @@ def test_chat_classifier_fails_loudly_when_artifacts_missing(tmp_path):
     err = exc_info.value
     assert err.pipeline_name == "chat"
     missing_file_names = [f.name for f in err.missing_files]
-    assert "model.pkl" in missing_file_names
-    assert "label_encoder.pkl" in missing_file_names
+    assert "three_pipeline_stress_model.pkl" in missing_file_names
+    assert "[CRITICAL MODEL ARTIFACT ERROR]" in str(err)

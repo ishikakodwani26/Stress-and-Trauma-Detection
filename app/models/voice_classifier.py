@@ -38,6 +38,23 @@ from app.models.base import (
     PredictionResult,
 )
 
+# ==============================================================================
+# VERIFIED LABEL ENCODING SPECIFICATION
+# Source: BTech Project (BTP) Technical Report: Real-Time AI-Based Stress Detection
+# Phase 2 Transition to Binary Risk Classification:
+#   - Class 0 = "low risk" (Low Stress / baseline)
+#   - Class 1 = "elevated risk" (Elevated Risk / High Stress)
+# In binary LogisticRegression predict_proba:
+#   - Index 0 -> probas[0] = P(low risk)
+#   - Index 1 -> probas[1] = P(elevated risk)
+# SVI (Stress & Trauma Vulnerability Index) = P(elevated risk) * 100.0
+# ==============================================================================
+EXPECTED_CLASS_ORDER = np.array([0, 1])
+CLASS_INDEX_LOW_RISK = 0
+CLASS_INDEX_ELEVATED_RISK = 1
+LABEL_LOW_RISK = "low risk"
+LABEL_ELEVATED_RISK = "elevated risk"
+
 logger = logging.getLogger(__name__)
 
 
@@ -255,6 +272,29 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
 
             # Resolve branches dynamically
             self.branches = self._resolve_branches(artifact)
+
+            # Validate expected class ordering [0, 1] across all branches to avoid silent inversion
+            for branch_name, branch_data in self.branches.items():
+                b_model = branch_data["model"]
+                if hasattr(b_model, "classes_"):
+                    classes_arr = np.asarray(b_model.classes_)
+                    if not np.array_equal(classes_arr, EXPECTED_CLASS_ORDER):
+                        raise ValueError(
+                            f"Branch '{branch_name}' has unexpected class ordering {classes_arr.tolist()}. "
+                            f"Expected {EXPECTED_CLASS_ORDER.tolist()} where 0='{LABEL_LOW_RISK}' and 1='{LABEL_ELEVATED_RISK}'."
+                        )
+
+            # Validate feature assembly order: acoustic (88) -> emotion (1024) -> nlp (768)
+            if self.feature_columns and len(self.feature_columns) == 1880:
+                ac_cols = list(artifact.get("ac_cols", []))
+                em_cols = list(artifact.get("em_cols", []))
+                nlp_cols = list(artifact.get("nlp_cols", []))
+                if ac_cols and self.feature_columns[:88] != ac_cols:
+                    raise ValueError("Artifact feature_columns [0:88] does not match ac_cols.")
+                if em_cols and self.feature_columns[88:1112] != em_cols:
+                    raise ValueError("Artifact feature_columns [88:1112] does not match em_cols.")
+                if nlp_cols and self.feature_columns[1112:1880] != nlp_cols:
+                    raise ValueError("Artifact feature_columns [1112:1880] does not match nlp_cols.")
 
             logger.info(
                 "Production model loaded successfully with %d branches: %s (Total raw dims: %d, weights: %s)",

@@ -18,4 +18,6 @@ def test_health_check_endpoint():
 
     artifacts = data["artifacts_ready"]
     assert "voice_three_pipeline_stress_model.pkl" in artifacts
-    assert "chat_model.pkl" in artifacts
+    assert "chat_three_pipeline_stress_model.pkl" in artifacts
+    assert artifacts["voice_three_pipeline_stress_model.pkl"] is True
+    assert artifacts["chat_three_pipeline_stress_model.pkl"] is True
