@@ -19,8 +19,8 @@ def dummy_production_artifact_dict() -> Dict[str, Any]:
 
 @pytest.fixture
 def dummy_production_model_path(tmp_path: Path) -> Path:
-    """Generate a valid dummy stressai_production_model.pkl on disk in a temp directory."""
-    target_file = tmp_path / "models" / "production" / "stressai_production_model.pkl"
+    """Generate a valid dummy three_pipeline_stress_model.pkl on disk in a temp directory."""
+    target_file = tmp_path / "models" / "production" / "three_pipeline_stress_model.pkl"
     return save_dummy_production_artifact(output_path=target_file, n_samples=40, random_state=42)
 
 

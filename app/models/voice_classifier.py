@@ -1,21 +1,21 @@
-"""Production Inference wrapper for the Multimodal Stress and Trauma Classifier.
+"""Production Inference wrapper for the 3-Pipeline Multimodal Stress Classifier.
 
 Loads the unified production model artifact:
-- models/production/stressai_production_model.pkl
+- models/production/three_pipeline_stress_model.pkl
 
 The artifact dictionary contains:
-- imputer: sklearn SimpleImputer (strategy='mean') fitted on all 1956 raw features
-- scaler: sklearn StandardScaler fitted on all 1956 raw features
-- pca_ac, pca_em, pca_nlp, pca_ctx: Fitted PCA objects per branch (10, 15, 15, 10 dims)
-- model_ac, model_em, model_nlp, model_ctx: Trained LogisticRegression classifiers per branch
-- ac_idx, em_idx, nlp_idx, ctx_idx: Slicing column indices for the 1956-dim raw vector
-- ac_cols, em_cols, nlp_cols, ctx_cols: Feature column names per branch
-- fusion_weights: Branch weighting dictionary (e.g., {'acoustic': 0.05, 'emotion': 0.35, 'nlp': 0.40, 'context': 0.20})
-- feature_columns: Full 1956 raw feature names list
+- imputer: sklearn SimpleImputer (strategy='mean') fitted on all 1880 raw features
+- scaler: sklearn StandardScaler fitted on all 1880 raw features
+- pca_ac, pca_em, pca_nlp: Fitted PCA objects per branch (10, 15, 15 dims)
+- model_ac, model_em, model_nlp: Trained LogisticRegression classifiers per branch
+- ac_idx, em_idx, nlp_idx: Slicing column indices for the 1880-dim raw vector
+- ac_cols, em_cols, nlp_cols: Feature column names per branch
+- fusion_weights: Branch weighting dictionary read dynamically from artifact (e.g. {'acoustic': 0.1, 'emotion': 0.45, 'nlp': 0.45})
+- feature_columns: Full 1880 raw feature names list
 
 Inference stages:
-1. Impute and standardize raw 1956-dim feature vector (SimpleImputer -> StandardScaler).
-2. Dynamically slice features into branches using index arrays.
+1. Impute and scale raw 1880-dim feature vector (SimpleImputer -> StandardScaler).
+2. Dynamically slice features into branches using index arrays (ac_idx, em_idx, nlp_idx).
 3. Project each branch slice through its PCA, then through its LogisticRegression classifier
    to produce independent probability scores for elevated risk.
 4. Blend branch probabilities with fusion weights read dynamically from the dictionary.
@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 
 
 class VoiceClassifierWrapper(BaseClassifierWrapper):
-    """Production late-fusion multimodal classifier wrapper.
-    
+    """Production 3-pipeline late-fusion multimodal classifier wrapper.
+
     Dynamically discovers and executes all model branches specified in the artifact
     dictionary without hardcoded branch names or weights.
     """
@@ -56,10 +56,10 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
         **kwargs: Any,
     ):
         """Initialize the classifier wrapper.
-        
+
         Args:
             model_dir: Optional directory containing production model artifacts.
-            model_path: Optional exact path to stressai_production_model.pkl.
+            model_path: Optional exact path to three_pipeline_stress_model.pkl.
             threshold: SVI threshold for 'elevated risk' classification (defaults to 50.0).
             **kwargs: Backward compatibility for legacy arguments.
         """
@@ -72,12 +72,12 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
         if model_path is not None:
             self.model_path = Path(model_path)
         elif model_dir is not None:
-            self.model_path = self.model_dir / "stressai_production_model.pkl"
+            self.model_path = self.model_dir / "three_pipeline_stress_model.pkl"
         else:
             configured_path = getattr(
                 settings,
                 "PRODUCTION_MODEL_PATH",
-                self.model_dir / "stressai_production_model.pkl",
+                self.model_dir / "three_pipeline_stress_model.pkl",
             )
             self.model_path = Path(configured_path)
 
@@ -85,7 +85,7 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
         explicit_config = (model_dir is not None) or (model_path is not None)
         if not explicit_config and not self.model_path.is_file():
             app_production_candidate = (
-                BASE_DIR / "app" / "models" / "production" / "stressai_production_model.pkl"
+                BASE_DIR / "app" / "models" / "production" / "three_pipeline_stress_model.pkl"
             )
             if app_production_candidate.is_file():
                 self.model_path = app_production_candidate
@@ -125,7 +125,7 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
 
     def _resolve_branches(self, artifact: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """Dynamically resolve model branches from the artifact dictionary.
-        
+
         Reads fusion_weights from the dict and maps each branch to its corresponding
         PCA transformer, LogisticRegression classifier, index slice array, and column names.
         Does not hardcode branch names, enabling seamless model swapping.
@@ -136,14 +136,12 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
         alias_lookup = {
             "acoustic": "ac",
             "emotion": "em",
-            "context": "ctx",
             "nlp": "nlp",
             "ac": "ac",
             "em": "em",
-            "ctx": "ctx",
         }
 
-        # Discover all candidate branch prefixes present in the artifact (e.g. from pca_*)
+        # Discover all candidate branch prefixes present in the artifact (from pca_*)
         discovered_pca_prefixes = [
             k[4:] for k in artifact.keys() if k.startswith("pca_") and not k.startswith("pca_cols")
         ]
@@ -259,10 +257,11 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
             self.branches = self._resolve_branches(artifact)
 
             logger.info(
-                "Production model loaded successfully with %d branches: %s (Total raw dims: %d)",
+                "Production model loaded successfully with %d branches: %s (Total raw dims: %d, weights: %s)",
                 len(self.branches),
                 list(self.branches.keys()),
-                len(self.feature_columns) or 1956,
+                len(self.feature_columns) or 1880,
+                self.fusion_weights,
             )
 
         except ModelArtifactNotFoundError:
@@ -281,11 +280,11 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
         feature_vector: np.ndarray,
         threshold: Optional[float] = None,
     ) -> PredictionResult:
-        """Run preprocessing and inference on the multimodal feature vector.
+        """Run preprocessing and inference on the 1880-dim multimodal feature vector.
 
         Inference pipeline:
-        1. Impute (SimpleImputer) then scale (StandardScaler) the full vector.
-        2. Slice into branches using column index arrays (ac_idx, em_idx, nlp_idx, ctx_idx).
+        1. Impute (SimpleImputer) then scale (StandardScaler) the full 1880 vector.
+        2. Slice into branches using column index arrays (ac_idx, em_idx, nlp_idx).
         3. Project each slice through its branch's PCA, then its LogisticRegression classifier
            to obtain the independent elevated risk probability.
         4. Blend branch probabilities using fusion_weights:
@@ -294,7 +293,7 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
         6. Label: 'elevated risk' if SVI >= threshold, else 'low risk'.
 
         Args:
-            feature_vector: 1D or 2D array of raw extracted features (1956 or 1880 dims).
+            feature_vector: 1D or 2D array of raw extracted features (1880 dims).
             threshold: Optional SVI threshold override.
 
         Returns:
@@ -315,20 +314,11 @@ class VoiceClassifierWrapper(BaseClassifierWrapper):
             elif X.ndim != 2:
                 raise ValueError(f"Feature vector must be 1D or 2D array, got {X.ndim}D shape {X.shape}")
 
-            expected_features = len(self.feature_columns) if self.feature_columns else 1956
+            expected_features = len(self.feature_columns) if self.feature_columns else 1880
 
-            # Handle 1880-dim input from audio pipeline (acoustic 88 + emotion 1024 + nlp 768)
-            # by padding with NaN so SimpleImputer handles missing context features gracefully.
-            if X.shape[1] == 1880 and expected_features == 1956:
-                logger.debug(
-                    "Received 1880 audio features; padding 76 context features with NaN for SimpleImputer."
-                )
-                padded_X = np.full((X.shape[0], 1956), np.nan, dtype=np.float64)
-                padded_X[:, :1880] = X
-                X = padded_X
-            elif X.shape[1] != expected_features:
+            if X.shape[1] != expected_features:
                 raise ValueError(
-                    f"Expected {expected_features} input features (or 1880 voice features), got {X.shape[1]}."
+                    f"Expected {expected_features} input features, got {X.shape[1]}."
                 )
 
             # Step 1: Apply imputer, then scaler to the full vector

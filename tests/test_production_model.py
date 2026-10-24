@@ -1,4 +1,4 @@
-"""Tests for the production multimodal classifier wrapper and inference logic."""
+"""Tests for the 3-pipeline production multimodal classifier wrapper and inference logic."""
 
 from pathlib import Path
 import numpy as np
@@ -9,7 +9,7 @@ from app.models.voice_classifier import VoiceClassifierWrapper
 
 
 def test_production_model_loads_and_has_branches():
-    """Verify that the production artifact loads and exposes all 4 branches."""
+    """Verify that the production artifact loads and exposes all 3 branches."""
     wrapper = VoiceClassifierWrapper()
     wrapper.load_artifacts()
 
@@ -17,22 +17,21 @@ def test_production_model_loads_and_has_branches():
     assert "acoustic" in wrapper.branches
     assert "emotion" in wrapper.branches
     assert "nlp" in wrapper.branches
-    assert "context" in wrapper.branches
+    assert len(wrapper.branches) == 3
 
-    # Check weights match expected dict
+    # Check weights match retrained model weights
     weights = wrapper.fusion_weights
-    assert pytest.approx(weights["acoustic"], 0.001) == 0.05
-    assert pytest.approx(weights["emotion"], 0.001) == 0.35
-    assert pytest.approx(weights["nlp"], 0.001) == 0.40
-    assert pytest.approx(weights["context"], 0.001) == 0.20
+    assert pytest.approx(weights["acoustic"], 0.001) == 0.10
+    assert pytest.approx(weights["emotion"], 0.001) == 0.45
+    assert pytest.approx(weights["nlp"], 0.001) == 0.45
 
 
-def test_production_inference_1956_dim_vector():
-    """Verify end-to-end inference on a 1956-dim vector."""
+def test_production_inference_1880_dim_vector():
+    """Verify end-to-end inference on an 1880-dim vector."""
     wrapper = VoiceClassifierWrapper(threshold=50.0)
 
-    # 1956 zeros
-    raw_vec = np.zeros(1956, dtype=np.float32)
+    # 1880 zeros
+    raw_vec = np.zeros(1880, dtype=np.float32)
     result = wrapper.predict(raw_vec)
 
     assert result.predicted_label in ("low risk", "elevated risk")
@@ -45,10 +44,10 @@ def test_production_inference_1956_dim_vector():
     assert "threshold" in meta
     assert meta["threshold"] == 50.0
     assert "branch_scores" in meta
-    assert len(meta["branch_scores"]) == 4
+    assert len(meta["branch_scores"]) == 3
 
     # Branch checks
-    for b in ["acoustic", "emotion", "nlp", "context"]:
+    for b in ["acoustic", "emotion", "nlp"]:
         assert b in meta["branch_scores"]
         b_info = meta["branch_scores"][b]
         assert "probability" in b_info
@@ -56,23 +55,11 @@ def test_production_inference_1956_dim_vector():
         assert "weighted_contribution" in b_info
 
 
-def test_production_inference_1880_dim_vector_auto_padding():
-    """Verify that an 1880-dim voice pipeline vector is imputed and executed without error."""
-    wrapper = VoiceClassifierWrapper(threshold=50.0)
-
-    audio_vec = np.ones(1880, dtype=np.float32) * 0.1
-    result = wrapper.predict(audio_vec)
-
-    assert result.predicted_label in ("low risk", "elevated risk")
-    assert 0.0 <= result.metadata["svi_score"] <= 100.0
-
-
 def test_svi_threshold_override():
     """Verify that the threshold can be configured and overridden at inference time."""
     wrapper = VoiceClassifierWrapper(threshold=50.0)
-    raw_vec = np.zeros(1956, dtype=np.float32)
+    raw_vec = np.zeros(1880, dtype=np.float32)
 
-    # Base SVI score for zeros is ~43.37
     res_default = wrapper.predict(raw_vec)
     svi = res_default.metadata["svi_score"]
 
@@ -103,9 +90,9 @@ def test_production_model_loud_failure_missing_path(tmp_path):
     wrapper = VoiceClassifierWrapper(model_dir=missing_dir)
 
     with pytest.raises(ModelArtifactNotFoundError) as exc_info:
-        wrapper.predict(np.zeros(1956))
+        wrapper.predict(np.zeros(1880))
 
     err = exc_info.value
     assert err.pipeline_name == "voice"
-    assert "stressai_production_model.pkl" in [f.name for f in err.missing_files]
+    assert "three_pipeline_stress_model.pkl" in [f.name for f in err.missing_files]
     assert str(missing_dir) in str(err)

@@ -17,5 +17,5 @@ def test_health_check_endpoint():
     assert "artifacts_ready" in data
 
     artifacts = data["artifacts_ready"]
-    assert "voice_stressai_production_model.pkl" in artifacts
+    assert "voice_three_pipeline_stress_model.pkl" in artifacts
     assert "chat_model.pkl" in artifacts

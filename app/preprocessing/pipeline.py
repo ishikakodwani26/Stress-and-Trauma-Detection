@@ -1,12 +1,11 @@
 """Voice feature extraction and fusion pipeline.
 
-Executes the modular 4-stream extraction chain:
+Executes the modular 3-stream extraction chain:
 1. Raw audio -> 16kHz mono 16-bit PCM WAV
 2. Stream A: Acoustic features (openSMILE)
    Stream B: Emotion embeddings (Wav2Vec2-XLS-R)
    Stream C: Speech-to-Text (IndicConformer) -> NLP embeddings (MuRIL)
-   Stream D: Clinical Context features (Qwen3-4B structured event extraction)
-3. Concatenation of the 4 streams into a single fused feature vector.
+3. Concatenation of the 3 streams into a single fused feature vector.
 
 Each stage is exposed as an independent callable function for isolated unit testing.
 """
@@ -14,7 +13,7 @@ Each stage is exposed as an independent callable function for isolated unit test
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-from typing import BinaryIO, Dict, Optional, Tuple, Union
+from typing import BinaryIO, Dict, Tuple, Union
 import numpy as np
 
 from app.preprocessing.audio_converter import convert_audio_to_wav_pcm16
@@ -38,20 +37,16 @@ class VoicePipelineFeatures:
     transcript: str
     nlp_features: np.ndarray
     fused_features: np.ndarray
-    context_features: Optional[np.ndarray] = None
 
     @property
     def feature_summary(self) -> Dict[str, int]:
         """Return the dimensions of each extracted feature stream."""
-        summary = {
+        return {
             "acoustic_dims": int(self.acoustic_features.size),
             "emotion_dims": int(self.emotion_features.size),
             "nlp_dims": int(self.nlp_features.size),
             "fused_total_dims": int(self.fused_features.size),
         }
-        if self.context_features is not None:
-            summary["context_dims"] = int(self.context_features.size)
-        return summary
 
 
 # ============================================================================
@@ -126,83 +121,36 @@ def stage_extract_nlp(transcript: str) -> np.ndarray:
 
 
 # ============================================================================
-# Stage 2d: Context Stream (Qwen3-4B Structured Event Extraction)
-# ============================================================================
-def stage_extract_context(transcript: str) -> np.ndarray:
-    """Stage 2d: Extract structured clinical trauma events and compute 76 numerical context features.
-
-    Runs the transcript through Qwen3-4B to extract structured clinical events,
-    then computes a 76-dimensional numerical feature vector from that output.
-
-    Note on Hardware Execution:
-        This stage is CPU-only like the rest of the pipeline (no GPU). Note that
-        Qwen3-4B inference on CPU may be slow (high latency per call); optimization
-        will be addressed in a future iteration.
-
-    Args:
-        transcript: Text transcript produced by IndicConformer ASR.
-
-    Returns:
-        np.ndarray: 1D array of 76 numerical context features.
-
-    Raises:
-        NotImplementedError: Stubbed until Qwen3-4B structured event extraction
-            and 76-feature calculation logic are provided.
-    """
-    logger.info("Running Pipeline Stage 2d: Qwen3-4B Context Feature Extraction...")
-
-    # TODO: [Qwen3-4B Integration]
-    # 1. Run transcript through Qwen3-4B on CPU to extract structured event categories:
-    #    - Event types: threat, physical/sexual violence, witnessed violence, self-harm, displacement, etc.
-    #    - Temporality: current, ongoing, past, future, unknown.
-    #    - Involved persons: user, another person, multiple, unknown.
-    #    - Assertion modality: affirmed, negated, hypothetical, unclear.
-    # 2. Compute 76 numerical context features matching ctx_cols in models/production/stressai_production_model.pkl.
-    # Note: Qwen3-4B inference on CPU may be slow without GPU acceleration.
-    raise NotImplementedError(
-        "stage_extract_context is not yet implemented. Qwen3-4B event extraction "
-        "and 76 numerical context feature calculation will be filled in here."
-    )
-
-
-# ============================================================================
 # Stage 3: Feature Concatenation (Fusion)
 # ============================================================================
 def stage_concatenate_features(
     acoustic_features: np.ndarray,
     emotion_features: np.ndarray,
     nlp_features: np.ndarray,
-    context_features: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Stage 3: Concatenate the feature sets into one 1D fused vector.
+    """Stage 3: Concatenate the three feature sets into one 1D fused vector.
 
     Args:
-        acoustic_features: 1D array from openSMILE.
-        emotion_features: 1D array from Wav2Vec2-XLS-R.
-        nlp_features: 1D array from MuRIL.
-        context_features: Optional 1D array of 76 context features from Qwen3-4B.
+        acoustic_features: 1D array from openSMILE (88 dims).
+        emotion_features: 1D array from Wav2Vec2-XLS-R (1024 dims).
+        nlp_features: 1D array from MuRIL (768 dims).
 
     Returns:
-        np.ndarray: 1D array of concatenated features.
+        np.ndarray: 1D array of concatenated features (1880 dims).
     """
     logger.info("Running Pipeline Stage 3: Feature Concatenation...")
-    features_to_fuse = [
+    fused = np.concatenate([
         acoustic_features.flatten(),
         emotion_features.flatten(),
         nlp_features.flatten(),
-    ]
-    if context_features is not None:
-        features_to_fuse.append(context_features.flatten())
-
-    fused = np.concatenate(features_to_fuse)
+    ])
     logger.info(
         "Fused feature vector constructed with %d total dimensions "
-        "(Acoustic: %d, Emotion: %d, NLP: %d%s)",
+        "(Acoustic: %d, Emotion: %d, NLP: %d)",
         fused.size,
         acoustic_features.size,
         emotion_features.size,
         nlp_features.size,
-        f", Context: {context_features.size}" if context_features is not None else "",
     )
     return fused
 
@@ -231,15 +179,11 @@ def run_voice_feature_pipeline(
     transcript = stage_transcribe_audio(wav_bytes, sample_rate=sr)
     nlp_embeds = stage_extract_nlp(transcript)
 
-    # 2d. Clinical Context features (Qwen3-4B)
-    context_feats = stage_extract_context(transcript)
-
-    # 3. Concatenate fused vector (acoustic + emotion + nlp + context)
+    # 3. Concatenate fused vector (acoustic + emotion + nlp)
     fused_vector = stage_concatenate_features(
         acoustic_features=acoustic_feats,
         emotion_features=emotion_embeds,
         nlp_features=nlp_embeds,
-        context_features=context_feats,
     )
 
     return VoicePipelineFeatures(
@@ -251,5 +195,4 @@ def run_voice_feature_pipeline(
         transcript=transcript,
         nlp_features=nlp_embeds,
         fused_features=fused_vector,
-        context_features=context_feats,
     )

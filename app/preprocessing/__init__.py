@@ -28,7 +28,6 @@ from app.preprocessing.pipeline import (
     stage_extract_emotion,
     stage_transcribe_audio,
     stage_extract_nlp,
-    stage_extract_context,
     stage_concatenate_features,
 )
 
@@ -50,6 +49,5 @@ __all__ = [
     "stage_extract_emotion",
     "stage_transcribe_audio",
     "stage_extract_nlp",
-    "stage_extract_context",
     "stage_concatenate_features",
 ]

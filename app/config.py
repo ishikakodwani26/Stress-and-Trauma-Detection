@@ -36,15 +36,15 @@ class Settings(BaseSettings):
 
     # Production Multimodal Model Artifacts
     PRODUCTION_MODEL_DIR: Path = BASE_DIR / "models" / "production"
-    PRODUCTION_MODEL_PATH: Path = BASE_DIR / "models" / "production" / "stressai_production_model.pkl"
+    PRODUCTION_MODEL_PATH: Path = BASE_DIR / "models" / "production" / "three_pipeline_stress_model.pkl"
     SVI_THRESHOLD: float = 50.0
 
     # Voice Pipeline Model Directory (points to production model directory)
     VOICE_MODEL_DIR: Path = BASE_DIR / "models" / "production"
-    VOICE_SCALER_PATH: Path = BASE_DIR / "models" / "production" / "stressai_production_model.pkl"
-    VOICE_PCA_PATH: Path = BASE_DIR / "models" / "production" / "stressai_production_model.pkl"
-    VOICE_LABEL_ENCODER_PATH: Path = BASE_DIR / "models" / "production" / "stressai_production_model.pkl"
-    VOICE_CLASSIFIER_PATH: Path = BASE_DIR / "models" / "production" / "stressai_production_model.pkl"
+    VOICE_SCALER_PATH: Path = BASE_DIR / "models" / "production" / "three_pipeline_stress_model.pkl"
+    VOICE_PCA_PATH: Path = BASE_DIR / "models" / "production" / "three_pipeline_stress_model.pkl"
+    VOICE_LABEL_ENCODER_PATH: Path = BASE_DIR / "models" / "production" / "three_pipeline_stress_model.pkl"
+    VOICE_CLASSIFIER_PATH: Path = BASE_DIR / "models" / "production" / "three_pipeline_stress_model.pkl"
 
     # Chat Pipeline Model Artifacts
     CHAT_MODEL_DIR: Path = BASE_DIR / "models" / "chat"
