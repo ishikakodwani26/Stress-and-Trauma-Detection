@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config import settings
+from app.config import BASE_DIR, settings
 from app.models.base import ModelArtifactNotFoundError
 from app.routers import chat_router, health_router, voice_router
 from app.routers.voice import voice_classifier
@@ -104,7 +104,15 @@ def create_app() -> FastAPI:
     app.include_router(voice_router)
     app.include_router(chat_router)
 
+    # Mount interactive browser recording UI
+    frontend_dir = BASE_DIR / "frontend"
+    if frontend_dir.is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+
     return app
+
 
 
 app = create_app()

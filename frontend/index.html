@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AI Voice Stress and Trauma Detection using Web Audio API in-browser PCM-16 WAV recording.">
+    <title>Voice Stress & Trauma Diagnostic AI</title>
+    
+    <!-- Google Fonts: Outfit & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="style.css">
+    <link rel="modulepreload" href="recorder.js">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="brand-wrapper">
+                <div class="brand-icon">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 100-6 3 3 0 000 6z"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="brand-title">Stress & Trauma AI</h1>
+                    <p class="brand-subtitle">Clinical Multimodal Voice Diagnostic System</p>
+                </div>
+            </div>
+
+            <div class="header-badges">
+                <div class="tech-badge" title="Capturing raw PCM samples and encoding to 16-bit WAV in JS">
+                    <div class="status-indicator"></div>
+                    <span>Web Audio API • 16-bit WAV</span>
+                </div>
+                <div class="tech-badge">
+                    <span>Target: 16kHz Mono</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Alert Notification Toast -->
+        <div id="alertToast" class="alert-toast" role="alert">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <span id="alertMessage"></span>
+        </div>
+
+        <!-- Dashboard Main Grid -->
+        <main class="dashboard-grid">
+            <!-- Left Column: Audio Recording Console -->
+            <section class="glass-panel" aria-label="Voice Recording Console">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15a3 3 0 01-3-3V4.5a3 3 0 116 0v7.5a3 3 0 01-3 3z"></path>
+                        </svg>
+                        <span>Voice Recorder</span>
+                    </h2>
+                </div>
+
+                <!-- Visualizer Waveform Canvas -->
+                <div class="visualizer-card">
+                    <canvas id="visualizerCanvas"></canvas>
+                    <div class="visualizer-overlay">
+                        <div id="recordingPill" class="recording-pill">
+                            <div class="pulse-dot"></div>
+                            <span>REC</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Timer Display -->
+                <div class="timer-container">
+                    <div id="timerDisplay" class="timer-digits">00:00.0</div>
+                    <div class="timer-subtext">Pure PCM-16 Browser Encoding</div>
+                </div>
+
+                <!-- Control Buttons -->
+                <div class="controls-container">
+                    <button id="recordBtn" class="primary-btn btn-record" type="button">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="8"></circle>
+                        </svg>
+                        <span>Start Recording</span>
+                    </button>
+
+                    <div class="secondary-actions">
+                        <button id="cancelBtn" class="primary-btn btn-secondary" type="button" disabled>
+                            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                            <span>Discard</span>
+                        </button>
+                    </div>
+
+                    <!-- Audio Preview Player -->
+                    <div id="audioPreviewCard" class="audio-preview-card">
+                        <div class="preview-label">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path>
+                            </svg>
+                            <span id="audioMeta">WAV Preview Ready</span>
+                        </div>
+                        <audio id="audioPlayer" controls></audio>
+                    </div>
+
+                    <!-- Submit CTA -->
+                    <button id="analyzeBtn" class="primary-btn btn-analyze" type="button" disabled>
+                        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                        <span>Analyze Voice Stress & Trauma</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Right Column: Diagnostic Results Dashboard -->
+            <section class="glass-panel" aria-label="Diagnostic Results">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"></path>
+                        </svg>
+                        <span>Multimodal Diagnostic Results</span>
+                    </h2>
+                </div>
+
+                <!-- Empty State Placeholder -->
+                <div id="emptyState" class="empty-state">
+                    <div class="empty-icon">
+                        <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15a3 3 0 01-3-3V4.5a3 3 0 116 0v7.5a3 3 0 01-3 3z"></path>
+                        </svg>
+                    </div>
+                    <p>Record your voice to run the 3-pipeline stress and trauma assessment.</p>
+                </div>
+
+                <!-- Dynamic Results Container -->
+                <div id="resultsContainer" class="results-container"></div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ES Module Script -->
+    <script type="module" src="app.js"></script>
+</body>
+</html>
