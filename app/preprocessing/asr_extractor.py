@@ -20,73 +20,111 @@ class IndicConformerASR:
     """ASR speech-to-text wrapper supporting IndicConformer and HuggingFace pipelines."""
 
     def __init__(self, model_id: Optional[str] = None):
-        self.model_id = model_id or getattr(settings, "INDIC_CONFORMER_MODEL_ID", "openai/whisper-small")
+        self.model_id = model_id or getattr(
+            settings, "INDIC_CONFORMER_MODEL_ID", "ai4bharat/indic-conformer-600m-multilingual"
+        )
         self.loaded_model_id: Optional[str] = None
         self._model = None
+        self._device = None
+        self.is_custom_indic_conformer: bool = False
+        self._fallback_pipeline = None
 
     def _load_model(self):
         """Lazy load real ASR model pipeline.
 
-        Attempts loading the configured model_id first.
-        If configured for NeMo (e.g. ai4bharat/indicconformer...), loads via NeMo ASRModel.from_pretrained.
-        Falls back cleanly to HuggingFace 'openai/whisper-small' with Hindi language forcing.
+        Primary: ai4bharat/indic-conformer-600m-multilingual via AutoModel (trust_remote_code=True).
+        Fallback: HuggingFace pipeline ('openai/whisper-small' with Hindi language forcing).
         """
         if self._model is not None:
             return
 
-        logger.info("Initializing ASR model (%s)...", self.model_id)
+        import torch
 
-        # 1. If configured with NeMo IndicConformer checkpoint, attempt NeMo ASRModel
-        if "indicconformer" in self.model_id.lower() or "ai4bharat" in self.model_id.lower():
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info("Initializing ASR model (%s) on %s...", self.model_id, self._device)
+
+        # 1. Attempt IndicConformer via AutoModel with trust_remote_code=True
+        if "indic-conformer" in self.model_id.lower() or "ai4bharat" in self.model_id.lower():
             try:
-                import nemo.collections.asr as nemo_asr
+                from transformers import AutoModel
+                import huggingface_hub
 
-                logger.info("Loading NeMo ASR model '%s' via ASRModel.from_pretrained...", self.model_id)
-                self._model = nemo_asr.models.ASRModel.from_pretrained(
-                    model_name=self.model_id
+                token = huggingface_hub.get_token()
+                logger.info(
+                    "Loading IndicConformer model '%s' (trust_remote_code=True)...",
+                    self.model_id,
                 )
+                self._model = AutoModel.from_pretrained(
+                    self.model_id,
+                    trust_remote_code=True,
+                    token=token,
+                ).to(self._device)
+                self._model.eval()
                 self.loaded_model_id = self.model_id
-                logger.info("ASR model loaded successfully via NeMo (%s).", self.model_id)
+                self.is_custom_indic_conformer = True
+                logger.info("IndicConformer ASR model '%s' loaded successfully.", self.model_id)
                 return
-            except Exception as nemo_err:
+            except Exception as indic_err:
                 logger.warning(
-                    "NeMo model load unavailable: %s. Falling back to HuggingFace ASR ('openai/whisper-small')...",
-                    nemo_err,
+                    "Could not load IndicConformer '%s': %s. Falling back to HuggingFace ASR ('openai/whisper-small')...",
+                    self.model_id,
+                    indic_err,
                 )
 
-        # 2. Attempt Hugging Face transformers pipeline with configured model
-        try:
-            from transformers import pipeline
+        # 2. Fallback to cached multilingual ASR model (openai/whisper-small)
+        self._load_whisper_fallback()
 
-            self._model = pipeline(
-                task="automatic-speech-recognition",
-                model=self.model_id,
-            )
-            self.loaded_model_id = self.model_id
-            logger.info("ASR model '%s' loaded successfully via transformers pipeline.", self.model_id)
-            return
-        except Exception as hf_err:
-            logger.warning(
-                "Could not load '%s' directly via transformers: %s. Attempting fallback...",
-                self.model_id,
-                hf_err,
-            )
+    def _load_whisper_fallback(self):
+        """Load robust fallback HuggingFace Whisper pipeline."""
+        if self._fallback_pipeline is not None:
+            return self._fallback_pipeline
 
-        # 3. Robust fallback to cached multilingual ASR model (openai/whisper-small)
         fallback_id = "openai/whisper-small"
         try:
             from transformers import pipeline
 
             logger.info("Loading fallback ASR model (%s)...", fallback_id)
-            self._model = pipeline(
+            self._fallback_pipeline = pipeline(
                 task="automatic-speech-recognition",
                 model=fallback_id,
             )
             self.loaded_model_id = fallback_id
+            self.is_custom_indic_conformer = False
             logger.info("Fallback ASR model '%s' loaded successfully.", fallback_id)
+            return self._fallback_pipeline
         except Exception as fallback_err:
             logger.error("Failed to load fallback ASR model: %s", fallback_err, exc_info=True)
             raise RuntimeError(f"Failed to load any ASR model: {fallback_err}") from fallback_err
+
+    def _run_whisper_transcription(self, waveform: np.ndarray, sr: int) -> str:
+        """Execute whisper transcription with Hindi language forcing as fallback."""
+        pipeline_obj = (
+            self._model
+            if not self.is_custom_indic_conformer and self._model is not None
+            else self._load_whisper_fallback()
+        )
+        generate_kwargs = {
+            "language": "hindi",
+            "task": "transcribe",
+            "repetition_penalty": 1.2,
+            "no_repeat_ngram_size": 3,
+            "max_new_tokens": 128,
+        }
+        try:
+            res = pipeline_obj(
+                {"raw": waveform, "sampling_rate": sr},
+                generate_kwargs=generate_kwargs,
+            )
+        except Exception as gen_err:
+            logger.warning(
+                "Inference with generate_kwargs failed (%s); retrying standard call...", gen_err
+            )
+            res = pipeline_obj({"raw": waveform, "sampling_rate": sr})
+
+        raw_text = res.get("text", "") if isinstance(res, dict) else str(res)
+        cleaned = raw_text.strip()
+        logger.info("ASR transcription result (Whisper fallback): '%s'", cleaned)
+        return cleaned
 
     def transcribe(
         self,
@@ -108,6 +146,7 @@ class IndicConformerASR:
 
         try:
             import soundfile as sf
+
             if isinstance(audio_input, (bytes, bytearray)):
                 if len(audio_input) == 0:
                     logger.info("Empty audio bytes provided; returning empty transcript.")
@@ -155,44 +194,41 @@ class IndicConformerASR:
         # 3. Load model and run real inference
         self._load_model()
 
-        # Hugging Face pipeline inference (in-memory dict)
-        if hasattr(self._model, "__call__"):
-            generate_kwargs = {
-                "language": "hindi",
-                "task": "transcribe",
-                "repetition_penalty": 1.2,
-                "no_repeat_ngram_size": 3,
-                "max_new_tokens": 128,
-            }
+        # Primary: IndicConformer inference matching training notebook pattern
+        if self.is_custom_indic_conformer and self._model is not None:
             try:
-                res = self._model(
-                    {"raw": waveform, "sampling_rate": sr},
-                    generate_kwargs=generate_kwargs,
-                )
-            except Exception as gen_err:
-                logger.warning("Inference with generate_kwargs failed (%s); retrying standard call...", gen_err)
-                res = self._model({"raw": waveform, "sampling_rate": sr})
+                import torch
+                import torchaudio
 
-            raw_text = res.get("text", "") if isinstance(res, dict) else str(res)
-            cleaned = raw_text.strip()
-            logger.info("ASR transcription result: '%s'", cleaned)
-            return cleaned
+                wav = torch.from_numpy(waveform).float()
+                # Ensure 2D shape [1, samples]
+                if wav.ndim == 1:
+                    wav = wav.unsqueeze(0)
+                elif wav.shape[0] > 1:
+                    wav = wav.mean(dim=0, keepdim=True)
 
-        # NeMo model inference
-        if hasattr(self._model, "transcribe"):
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                sf.write(tmp.name, waveform, sr, subtype="PCM_16")
-                tmp_path = Path(tmp.name)
-            try:
-                transcriptions = self._model.transcribe(paths=[str(tmp_path)])
-                cleaned = (transcriptions[0] if transcriptions else "").strip()
-                logger.info("ASR transcription result (NeMo): '%s'", cleaned)
+                # Resample to 16kHz if not already
+                if sr != 16000:
+                    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
+                    wav = resampler(wav)
+
+                wav = wav.float()
+
+                with torch.inference_mode():
+                    transcription = self._model(wav, "hi", "ctc")
+
+                cleaned = str(transcription).strip() if transcription else ""
+                logger.info("ASR transcription result (IndicConformer): '%s'", cleaned)
                 return cleaned
-            finally:
-                if tmp_path.exists():
-                    tmp_path.unlink()
+            except Exception as infer_err:
+                logger.error(
+                    "IndicConformer inference failed: %s; falling back to whisper...",
+                    infer_err,
+                    exc_info=True,
+                )
 
-        return ""
+        # Fallback: Whisper pipeline inference
+        return self._run_whisper_transcription(waveform, sr)
 
 
 # Standalone callable function for independent pipeline stages and unit testing

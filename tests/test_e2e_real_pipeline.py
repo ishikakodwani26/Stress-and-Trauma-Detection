@@ -16,9 +16,18 @@ Run explicitly via:
     pytest -m slow
 """
 
-import os
-from pathlib import Path
 import io
+import os
+import sys
+from pathlib import Path
+
+# Ensure UTF-8 output on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import numpy as np
 import pytest
 import soundfile as sf
