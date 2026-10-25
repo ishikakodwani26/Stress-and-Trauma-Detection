@@ -55,7 +55,8 @@ class Settings(BaseSettings):
     # Pretrained Deep Learning Checkpoints / Identifiers
     WAV2VEC2_MODEL_ID: str = "facebook/wav2vec2-xls-r-300m"
     MURIL_MODEL_ID: str = "google/muril-base-cased"
-    INDIC_CONFORMER_MODEL_ID: str = "ai4bharat/indicconformer_asr"
+    INDIC_CONFORMER_MODEL_ID: str = "openai/whisper-tiny"
+    ASR_MODEL_ID: str = "openai/whisper-tiny"
 
     # OpenSMILE Feature Configuration
     OPENSMILE_FEATURE_SET: str = "eGeMAPSv02"
