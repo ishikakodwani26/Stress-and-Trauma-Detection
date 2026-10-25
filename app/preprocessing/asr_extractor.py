@@ -20,21 +20,41 @@ class IndicConformerASR:
     """ASR speech-to-text wrapper supporting IndicConformer and HuggingFace pipelines."""
 
     def __init__(self, model_id: Optional[str] = None):
-        self.model_id = model_id or getattr(settings, "INDIC_CONFORMER_MODEL_ID", "openai/whisper-tiny")
+        self.model_id = model_id or getattr(settings, "INDIC_CONFORMER_MODEL_ID", "openai/whisper-small")
+        self.loaded_model_id: Optional[str] = None
         self._model = None
 
     def _load_model(self):
         """Lazy load real ASR model pipeline.
 
-        Attempts loading the configured model_id first. If unavailable (e.g. gated checkpoint
-        or missing NeMo dependencies), falls back cleanly to 'openai/whisper-tiny'.
+        Attempts loading the configured model_id first.
+        If configured for NeMo (e.g. ai4bharat/indicconformer...), loads via NeMo ASRModel.from_pretrained.
+        Falls back cleanly to HuggingFace 'openai/whisper-small' with Hindi language forcing.
         """
         if self._model is not None:
             return
 
         logger.info("Initializing ASR model (%s)...", self.model_id)
 
-        # 1. Attempt Hugging Face transformers pipeline with configured model
+        # 1. If configured with NeMo IndicConformer checkpoint, attempt NeMo ASRModel
+        if "indicconformer" in self.model_id.lower() or "ai4bharat" in self.model_id.lower():
+            try:
+                import nemo.collections.asr as nemo_asr
+
+                logger.info("Loading NeMo ASR model '%s' via ASRModel.from_pretrained...", self.model_id)
+                self._model = nemo_asr.models.ASRModel.from_pretrained(
+                    model_name=self.model_id
+                )
+                self.loaded_model_id = self.model_id
+                logger.info("ASR model loaded successfully via NeMo (%s).", self.model_id)
+                return
+            except Exception as nemo_err:
+                logger.warning(
+                    "NeMo model load unavailable: %s. Falling back to HuggingFace ASR ('openai/whisper-small')...",
+                    nemo_err,
+                )
+
+        # 2. Attempt Hugging Face transformers pipeline with configured model
         try:
             from transformers import pipeline
 
@@ -42,38 +62,27 @@ class IndicConformerASR:
                 task="automatic-speech-recognition",
                 model=self.model_id,
             )
+            self.loaded_model_id = self.model_id
             logger.info("ASR model '%s' loaded successfully via transformers pipeline.", self.model_id)
             return
         except Exception as hf_err:
             logger.warning(
-                "Could not load '%s' directly via transformers: %s. Attempting NeMo or fallback...",
+                "Could not load '%s' directly via transformers: %s. Attempting fallback...",
                 self.model_id,
                 hf_err,
             )
 
-        # 2. Attempt NeMo toolkit if available
-        try:
-            import nemo.collections.asr as nemo_asr
-
-            self._model = nemo_asr.models.EncDecCTCModel.restore_from(self.model_id)
-            logger.info("ASR model loaded successfully via NeMo.")
-            return
-        except Exception as nemo_err:
-            logger.warning(
-                "NeMo toolkit load unavailable: %s. Falling back to robust HuggingFace ASR ('openai/whisper-tiny')...",
-                nemo_err,
-            )
-
-        # 3. Robust fallback to cached multilingual ASR model (openai/whisper-tiny)
+        # 3. Robust fallback to cached multilingual ASR model (openai/whisper-small)
+        fallback_id = "openai/whisper-small"
         try:
             from transformers import pipeline
 
-            fallback_id = "openai/whisper-tiny"
             logger.info("Loading fallback ASR model (%s)...", fallback_id)
             self._model = pipeline(
                 task="automatic-speech-recognition",
                 model=fallback_id,
             )
+            self.loaded_model_id = fallback_id
             logger.info("Fallback ASR model '%s' loaded successfully.", fallback_id)
         except Exception as fallback_err:
             logger.error("Failed to load fallback ASR model: %s", fallback_err, exc_info=True)
@@ -148,7 +157,22 @@ class IndicConformerASR:
 
         # Hugging Face pipeline inference (in-memory dict)
         if hasattr(self._model, "__call__"):
-            res = self._model({"raw": waveform, "sampling_rate": sr})
+            generate_kwargs = {
+                "language": "hindi",
+                "task": "transcribe",
+                "repetition_penalty": 1.2,
+                "no_repeat_ngram_size": 3,
+                "max_new_tokens": 128,
+            }
+            try:
+                res = self._model(
+                    {"raw": waveform, "sampling_rate": sr},
+                    generate_kwargs=generate_kwargs,
+                )
+            except Exception as gen_err:
+                logger.warning("Inference with generate_kwargs failed (%s); retrying standard call...", gen_err)
+                res = self._model({"raw": waveform, "sampling_rate": sr})
+
             raw_text = res.get("text", "") if isinstance(res, dict) else str(res)
             cleaned = raw_text.strip()
             logger.info("ASR transcription result: '%s'", cleaned)
